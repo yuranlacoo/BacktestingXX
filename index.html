@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Backtesting Platform - FX Replay Style</title>
+<style>
+  /* Reset e estilos gerais */
+  * { box-sizing: border-box; margin:0; padding:0; font-family: 'Segoe UI', sans-serif; }
+  body { background-color:#121212; color:#eee; }
+  h1,h2,h3 { margin-bottom:10px; }
+  button { cursor:pointer; border:none; padding:8px 12px; border-radius:5px; font-weight:bold; }
+  
+  /* Layout principal */
+  .container { display:flex; height:100vh; }
+  .left-panel { width:70%; padding:10px; display:flex; flex-direction:column; }
+  .right-panel { width:30%; padding:10px; border-left:1px solid #333; display:flex; flex-direction:column; gap:15px; }
+  
+  /* Gráfico */
+  #chart { flex:1; background-color:#1e1e1e; border:1px solid #333; position:relative; }
+  .candle { position:absolute; bottom:0; width:6px; border-left:1px solid #000; border-right:1px solid #000; }
+
+  /* Painel de controles */
+  .controls { display:flex; justify-content:space-between; margin:5px 0; }
+  .controls button { background-color:#007bff; color:white; }
+  .controls button:hover { background-color:#0056b3; }
+  
+  /* Painel de trades */
+  .trade-panel { background-color:#1a1a1a; padding:10px; border-radius:5px; }
+  .trade-panel input, select { width:100%; padding:5px; margin:3px 0; border-radius:3px; border:1px solid #555; background-color:#222; color:#eee; }
+  .trade-panel button { width:100%; margin-top:5px; background-color:#28a745; color:white; }
+  .trade-panel button:hover { background-color:#218838; }
+
+  /* Estatísticas */
+  .stats-panel { background-color:#1a1a1a; padding:10px; border-radius:5px; flex:1; overflow-y:auto; }
+  .stats-panel table { width:100%; border-collapse:collapse; }
+  .stats-panel th, .stats-panel td { border:1px solid #333; padding:5px; text-align:center; }
+  .stats-panel th { background-color:#222; }
+
+  /* Equity curve */
+  #equity { width:100%; height:150px; background-color:#111; border:1px solid #333; margin-top:10px; }
+
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="left-panel">
+    <h2>Gráfico - FX Replay Style</h2>
+    <div id="chart"></div>
+    <div class="controls">
+      <button id="prevCandle">◀️</button>
+      <button id="playPause">▶️ Play</button>
+      <button id="nextCandle">▶️</button>
+      <label>Velocidade:
+        <select id="speedSelect">
+          <option value="1000">Normal</option>
+          <option value="500">Rápido</option>
+          <option value="250">Muito rápido</option>
+        </select>
+      </label>
+    </div>
+  </div>
+
+  <div class="right-panel">
+    <div class="trade-panel">
+      <h3>Abrir Trade</h3>
+      <label>Tipo:</label>
+      <select id="tradeType">
+        <option value="buy">Buy</option>
+        <option value="sell">Sell</option>
+      </select>
+      <label>Entry:</label>
+      <input type="number" id="entry" step="0.0001" placeholder="Ex: 1.2345">
+      <label>SL:</label>
+      <input type="number" id="sl" step="0.0001" placeholder="Ex: 1.2300">
+      <label>TP:</label>
+      <input type="number" id="tp" step="0.0001" placeholder="Ex: 1.2400">
+      <button id="openTrade">Abrir Trade</button>
+    </div>
+
+    <div class="stats-panel">
+      <h3>Estatísticas</h3>
+      <div>Total Trades: <span id="totalTrades">0</span></div>
+      <div>Vitórias: <span id="wins">0</span></div>
+      <div>Derrotas: <span id="losses">0</span></div>
+      <div>Win Rate: <span id="winRate">0%</span></div>
+      <canvas id="equity"></canvas>
+      <h4>Histórico de Trades</h4>
+      <table>
+        <thead>
+          <tr><th>#</th><th>Tipo</th><th>Entrada</th><th>SL</th><th>TP</th><th>Resultado</th></tr>
+        </thead>
+        <tbody id="tradeHistory"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+// Dados de exemplo (candles)
+let candles = [];
+for(let i=0;i<200;i++){
+  let open = 1 + Math.random()*0.01;
+  let close = 1 + Math.random()*0.01;
+  let high = Math.max(open,close) + Math.random()*0.005;
+  let low = Math.min(open,close) - Math.random()*0.005;
+  candles.push({open,close,high,low});
+}
+
+let currentCandle = 0;
+let playing = false;
+let playInterval = null;
+let speed = 1000;
+let trades = [];
+let equityData = [1000];
+
+const chart = document.getElementById('chart');
+
+function drawCandles(){
+  chart.innerHTML = '';
+  let max = Math.max(...candles.map(c=>c.high));
+  let min = Math.min(...candles.map(c=>c.low));
+  let chartHeight = chart.clientHeight;
+  let chartWidth = chart.clientWidth;
+  let candleWidth = Math.floor(chartWidth / candles.length);
+  for(let i=0;i<=currentCandle;i++){
+    let c = candles[i];
+    let color = c.close >= c.open ? '#4caf50' : '#f44336';
+    let highPos = ((c.high - min)/(max-min))*chartHeight;
+    let lowPos = ((c.low - min)/(max-min))*chartHeight;
+    let openPos = ((c.open - min)/(max-min))*chartHeight;
+    let closePos = ((c.close - min)/(max-min))*chartHeight;
+    let candle = document.createElement('div');
+    candle.className='candle';
+    candle.style.left=(i*candleWidth)+'px';
+    candle.style.height=Math.abs(closePos-openPos)+'px';
+    candle.style.bottom=Math.min(openPos,closePos)+'px';
+    candle.style.width=(candleWidth-1)+'px';
+    candle.style.backgroundColor=color;
+    chart.appendChild(candle);
+  }
+}
+
+function nextCandleFunc(){
+  if(currentCandle < candles.length-1) currentCandle++;
+  drawCandles();
+}
+
+function prevCandleFunc(){
+  if(currentCandle>0) currentCandle--;
+  drawCandles();
+}
+
+function playPauseFunc(){
+  if(!playing){
+    playing=true;
+    document.getElementById('playPause').textContent='⏸️ Pause';
+    playInterval = setInterval(nextCandleFunc,speed);
+  }else{
+    playing=false;
+    document.getElementById('playPause').textContent='▶️ Play';
+    clearInterval(playInterval);
+  }
+}
+
+function openTradeFunc(){
+  let type = document.getElementById('tradeType').value;
+  let entry = parseFloat(document.getElementById('entry').value);
+  let sl = parseFloat(document.getElementById('sl').value);
+  let tp = parseFloat(document.getElementById('tp').value);
+  let trade = {type,entry,sl,tp,result:null};
+  trades.push(trade);
+  checkTrade(trade);
+  updateStats();
+}
+
+function checkTrade(trade){
+  for(let i=currentCandle;i<candles.length;i++){
+    let c = candles[i];
+    if(trade.type=='buy'){
+      if(c.low<=trade.sl){
+        trade.result = -1;
+        break;
+      }
+      if(c.high>=trade.tp){
+        trade.result = 1;
+        break;
+      }
+    }else{
+      if(c.high>=trade.sl){
+        trade.result = -1;
+        break;
+      }
+      if(c.low<=trade.tp){
+        trade.result = 1;
+        break;
+      }
+    }
+  }
+  updateTradeHistory();
+}
+
+function updateTradeHistory(){
+  const tbody = document.getElementById('tradeHistory');
+  tbody.innerHTML='';
+  trades.forEach((t,i)=>{
+    let tr = document.createElement('tr');
+    tr.innerHTML=`<td>${i+1}</td><td>${t.type}</td><td>${t.entry.toFixed(4)}</td><td>${t.sl.toFixed(4)}</td><td>${t.tp.toFixed(4)}</td><td>${t.result===1?'Win': t.result===-1?'Loss':'Open'}</td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+function updateStats(){
+  let wins = trades.filter(t=>t.result===1).length;
+  let losses = trades.filter(t=>t.result===-1).length;
+  let total = trades.length;
+  document.getElementById('totalTrades').textContent = total;
+  document.getElementById('wins').textContent = wins;
+  document.getElementById('losses').textContent = losses;
+  document.getElementById('winRate').textContent = total>0?((wins/total)*100).toFixed(2)+'%':'0%';
+  updateEquityCurve();
+}
+
+function updateEquityCurve(){
+  const canvas = document.getElementById('equity');
+  const ctx = canvas.getContext('2d');
+  canvas.width = canvas.clientWidth;
+  canvas.height = canvas.clientHeight;
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  let eq=1000;
+  equityData=[eq];
+  trades.forEach(t=>{
+    if(t.result===1) eq+=10;
+    else if(t.result===-1) eq-=10;
+    equityData.push(eq);
+  });
+  let max = Math.max(...equityData);
+  let min = Math.min(...equityData);
+  ctx.strokeStyle='#4caf50';
+  ctx.beginPath();
+  equityData.forEach((v,i)=>{
+    let x = i*(canvas.width/(equityData.length-1));
+    let y = canvas.height - ((v-min)/(max-min))*canvas.height;
+    if(i===0) ctx.moveTo(x,y);
+    else ctx.lineTo(x,y);
+  });
+  ctx.stroke();
+}
+
+// Eventos
+document.getElementById('nextCandle').addEventListener('click',nextCandleFunc);
+document.getElementById('prevCandle').addEventListener('click',prevCandleFunc);
+document.getElementById('playPause').addEventListener('click',playPauseFunc);
+document.getElementById('openTrade').addEventListener('click',openTradeFunc);
+document.getElementById('speedSelect').addEventListener('change',e=>{speed=parseInt(e.target.value); if(playing){clearInterval(playInterval); playInterval=setInterval(nextCandleFunc,speed);}});
+
+// Inicial
+drawCandles();
+updateStats();
+</script>
+</body>
+</html>
